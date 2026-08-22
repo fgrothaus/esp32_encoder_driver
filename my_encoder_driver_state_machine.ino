@@ -28,7 +28,8 @@ const int8_t encoderTabelle[] = {
    0, -1,  1,  0
 };
 
-// Diese ISR läuft blitzschnell bei JEDER Änderung an CLK oder DT
+// Diese ISR läuft blitzschnell bei JEDER Änderung an CLK oder DT. Es können pro Raste auch mehr als vier Zustände durchlaufen werden. Es sind aber nur vier Zustände pro Links-/Rechtsdrehung gültig, sodass bei ungültigen Zuständen einfach +0 addiert wird.
+// Dadurch werden nur die gültigen Zustände (bei Rechtsdrehung 3-2-0-1-3) addiert und der Encoder kann perfekt +1 pro Raste rechnen (siehe loop).
 // Pro Raste werden alle vier Zustände durchlaufen. D.h. pro Raste wird 4x die encoderISR aufgerufen
 void IRAM_ATTR encoderISR() {
   // REG_READ liest das gesamte 32-Bit-Register (Adresse 0x3FF4403C) im GPIO-Controller an der Andresse GPIO_IN_REG, in der die Zustände von Pin 0-31 stehen (32 Bit)
@@ -54,6 +55,8 @@ void IRAM_ATTR encoderISR() {
   alterZustand = neuerZustand;
 }
 
+// IRAM_ATTR sagt dem Compiler, dass die Funktion der ISR direkt in den schnellen internen Instruction-RAM gelegt wird und nicht in den langsameren Flash-Speicher.
+// Dadurch feuert die ISR in Nanosekunden alles durch
 void IRAM_ATTR buttonISR() {
   unsigned long jetzt = millis();
   if (jetzt - letzteFlankeSW > 200) { // 200ms Entprellen für den Taster
@@ -70,10 +73,12 @@ void setup() {
   pinMode(pinDT, INPUT_PULLUP);
   pinMode(pinSW, INPUT_PULLUP);
 
-  // Initialen Zustand einlesen
+  // Initialen Zustand einlesen - Ist normalerweise 0b0011, da Links- und Rechtsdrehung immer 3-2-0-1, bzw. 3-1-0-2 als Gültige Zustandswechsel haben
   alterZustand = (digitalRead(pinCLK) << 1) | digitalRead(pinDT);
 
-  // Interrupts auf BEIDEN Pins aktivieren – reagiert auf JEDEN Wechsel (CHANGE)
+  // Interrupts auf BEIDEN Pins aktivieren - CHANGE = Bei JEDEM Zustandswechsel, FALLING = Bei Ziehen auf LOW
+  // digitalPinToInterrupt(pin) = Gibt Hardware-Interrupt-Leitung zurück für den jeweiligen Pin
+  // attachInterrupt(interruptKanalNummer, Adresse zur ISR, MODE) = Hängt die ISR in die Interrupt-Vektortabelle
   attachInterrupt(digitalPinToInterrupt(pinCLK), encoderISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(pinDT),  encoderISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(pinSW),  buttonISR,  FALLING);
@@ -102,5 +107,8 @@ void loop() {
     }
   }
 
-  delay(10);
+  delay(10); // Die ISR läuft asynchron im Hintergrund. Die Loop läuft alle 10ms und kann dadurch manchmal einen Stand aus drehZaehler ablesen, wenn die ISR erst bei Schritt 3 ist.
+  // Wenn extrem schnell gedreht wird und der Encoder zwei Rasten durchläuft, kann die Loop in 10ms nicht so schnell hinterherkommen, sodass in der ISR z.B. 8 Zustandswechsel passiert sind,
+  // der Delay dann 8 in aktuellerStand stehen hat und somit zwei echte Rasten pro loop berechnet. Was vollkommen korrekt ist, aber in der Ausgabe dann von 1 auf 3 hochzählt.
+  // Es wurde also jeder Zustandswechsel durch die ISR (interrupt) erfasst und nichts ist verloren gegangen.
 }
